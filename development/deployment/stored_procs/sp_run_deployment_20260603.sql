@@ -1,7 +1,7 @@
 
---call _SNOW_DB_.SNOW_GIT_INT_SCH.SP_RUN_DEPLOYMENT(1,'development/Extract/ddl_CUSTOMER_EX.sql');
+--call SNOW_GIT_INT_DB.SNOW_GIT_INT_SCH.SP_RUN_DEPLOYMENT(1,'development/Extract/ddl_CUSTOMER_EX.sql');
 
-CREATE OR REPLACE PROCEDURE _SNOW_DB_.SNOW_GIT_INT_SCH.SP_RUN_DEPLOYMENT(
+CREATE OR REPLACE PROCEDURE SNOW_GIT_INT_DB.SNOW_GIT_INT_SCH.SP_RUN_DEPLOYMENT(
     REQUEST_ID  VARCHAR,
     SCRIPT_NAME VARCHAR
 )
@@ -37,7 +37,7 @@ DECLARE
         SELECT 
             TRIM(PARAMETER_NAME)  AS TOKEN,
             TRIM(PARAMETER_VALUE) AS TOKEN_VALUE
-        FROM _SNOW_DB_.SNOW_GIT_INT_SCH.DEPLOYMENT_PARAMETER_VALUES
+        FROM SNOW_GIT_INT_DB.SNOW_GIT_INT_SCH.DEPLOY_PARAM_vALUES
         WHERE PARAMETER_NAME IS NOT NULL
           AND PARAMETER_VALUE IS NOT NULL;
 
@@ -46,9 +46,9 @@ BEGIN
     -- STEP 1: Read raw script from Git stage
     ------------------------------------------------------------
     BEGIN
-        v_read_sql := 'SELECT LISTAGG($1, '' '') AS FILE_CONTENT FROM @_SNOW_DB_.SNOW_GIT_INT_SCH.SNOW_GIT_INT_REPO/branches/main/'
+        v_read_sql := 'SELECT LISTAGG($1, '' '') AS FILE_CONTENT FROM @SNOW_GIT_INT_DB.SNOW_GIT_INT_SCH.SNOW_GIT_INT_REPO/branches/main/'
                       || SCRIPT_NAME
-                      || ' (FILE_FORMAT => ''_SNOW_DB_.SNOW_GIT_INT_SCH.MY_TEXT_FORMAT'')';
+                      || ' (FILE_FORMAT => ''SNOW_GIT_INT_DB.SNOW_GIT_INT_SCH.REPO_STG_SCRIPTS_FF'')';
 
         LET res RESULTSET := (EXECUTE IMMEDIATE :v_read_sql);
         LET cur CURSOR FOR res;
@@ -57,7 +57,7 @@ BEGIN
         CLOSE cur;
     EXCEPTION
         WHEN OTHER THEN
-            INSERT INTO _SNOW_DB_.SNOW_GIT_INT_SCH.DEPLOYMENT_LOG (
+            INSERT INTO SNOW_GIT_INT_DB.SNOW_GIT_INT_SCH.DEPLOYMENT_LOG (
                 REQUEST_ID, SCRIPT_NAME, STATUS, ERROR_MESSAGE
             ) VALUES (
                 :REQUEST_ID,
@@ -68,16 +68,48 @@ BEGIN
             RETURN 'FAILED: Could not read script — ' || :sqlerrm;
     END;
 
-    -- NULL guard
-    IF (v_raw_script IS NULL OR LENGTH(TRIM(v_raw_script)) = 0) THEN
-        INSERT INTO _SNOW_DB_.SNOW_GIT_INT_SCH.DEPLOYMENT_LOG (
-            REQUEST_ID, SCRIPT_NAME, STATUS, ERROR_MESSAGE
-        ) VALUES (
-            :REQUEST_ID, :SCRIPT_NAME,
+    ------------------------------------------------------------
+    -- STEP 1A: File existence check
+    ------------------------------------------------------------
+    IF (v_raw_script = '') THEN
+    
+        INSERT INTO SNOW_GIT_INT_DB.SNOW_GIT_INT_SCH.DEPLOYMENT_LOG (
+            REQUEST_ID,
+            SCRIPT_NAME,
+            STATUS,
+            ERROR_MESSAGE
+        )
+        VALUES (
+            :REQUEST_ID,
+            :SCRIPT_NAME,
             'FAILED',
-            'Script was read but returned NULL or empty. Check file format and stage path.'
+            'File not found in Git repository: ' || :SCRIPT_NAME
         );
-        RETURN 'FAILED: Script content is NULL or empty';
+    
+        RETURN 'FAILED: File not found in Git repository.';
+    
+    END IF;
+    
+    ------------------------------------------------------------
+    -- STEP 1B: Empty file check
+    ------------------------------------------------------------
+    IF (LENGTH(TRIM(v_raw_script)) = 0) THEN
+    
+        INSERT INTO SNOW_GIT_INT_DB.SNOW_GIT_INT_SCH.DEPLOYMENT_LOG (
+            REQUEST_ID,
+            SCRIPT_NAME,
+            STATUS,
+            ERROR_MESSAGE
+        )
+        VALUES (
+            :REQUEST_ID,
+            :SCRIPT_NAME,
+            'FAILED',
+            'File exists but contains no executable content'
+        );
+    
+        RETURN 'FAILED: File exists but contains no executable content';
+    
     END IF;
 
     -- Carry raw script forward for logging
@@ -112,13 +144,13 @@ BEGIN
     WHERE matched_token IS NOT NULL;
 
     IF (v_unresolved IS NOT NULL AND LENGTH(TRIM(v_unresolved)) > 0) THEN
-        INSERT INTO _SNOW_DB_.SNOW_GIT_INT_SCH.DEPLOYMENT_LOG (
+        INSERT INTO SNOW_GIT_INT_DB.SNOW_GIT_INT_SCH.DEPLOYMENT_LOG (
             REQUEST_ID, SCRIPT_NAME, RAW_SCRIPT, RESOLVED_SCRIPT,
             STATUS, ERROR_MESSAGE, UNRESOLVED_TOKENS
         ) VALUES (
             :REQUEST_ID, :SCRIPT_NAME, :v_raw_script, :v_resolved_script,
             'FAILED',
-            'Deployment aborted. Unresolved tokens found. Add them to DEPLOYMENT_PARAMETER_VALUES.',
+            'Deployment aborted. Unresolved tokens found. Add them to DEPLOY_PARAM_vALUES.',
             :v_unresolved
         );
         RETURN 'FAILED: Unresolved tokens — ' || v_unresolved;
@@ -148,7 +180,7 @@ BEGIN
     ------------------------------------------------------------
     -- STEP 5: Log success
     ------------------------------------------------------------
-    INSERT INTO _SNOW_DB_.SNOW_GIT_INT_SCH.DEPLOYMENT_LOG (
+    INSERT INTO SNOW_GIT_INT_DB.SNOW_GIT_INT_SCH.DEPLOYMENT_LOG (
         REQUEST_ID, SCRIPT_NAME, RAW_SCRIPT, RESOLVED_SCRIPT,
         STATUS, EXECUTION_MS
     ) VALUES (
@@ -163,7 +195,7 @@ EXCEPTION
         v_end     := CURRENT_TIMESTAMP();
         v_exec_ms := DATEDIFF('millisecond', v_start, v_end);
 
-        INSERT INTO _SNOW_DB_.SNOW_GIT_INT_SCH.DEPLOYMENT_LOG (
+        INSERT INTO SNOW_GIT_INT_DB.SNOW_GIT_INT_SCH.DEPLOYMENT_LOG (
             REQUEST_ID, SCRIPT_NAME, RAW_SCRIPT, RESOLVED_SCRIPT,
             STATUS, ERROR_MESSAGE, EXECUTION_MS
         ) VALUES (

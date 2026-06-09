@@ -1,11 +1,15 @@
 
 --call _SNOW_DB_.SNOW_GIT_INT_SCH.SP_RUN_DEPLOYMENT(1,'development/Extract/ddl_CUSTOMER_EX.sql');
 
-CREATE OR REPLACE PROCEDURE _SNOW_DB_.SNOW_GIT_INT_SCH.SP_RUN_DEPLOYMENT("REQUEST_ID" VARCHAR, "SCRIPT_NAME" VARCHAR)
+CREATE OR REPLACE PROCEDURE _SNOW_DB_.SNOW_GIT_INT_SCH.SP_RUN_DEPLOYMENT(
+    REQUEST_ID  VARCHAR,
+    SCRIPT_NAME VARCHAR
+)
 RETURNS VARCHAR
 LANGUAGE SQL
 EXECUTE AS CALLER
-AS '
+AS
+$$
 DECLARE
     -- Script content
     v_raw_script        VARCHAR;
@@ -28,12 +32,12 @@ DECLARE
     v_stmt_count        NUMBER;
     v_index             NUMBER;
 
-    -- Cursor over token registry
+    -- Cursor over tokenS
     c_tokens CURSOR FOR
         SELECT 
             TRIM(PARAMETER_NAME)  AS TOKEN,
             TRIM(PARAMETER_VALUE) AS TOKEN_VALUE
-        FROM _SNOW_DB_.SNOW_GIT_INT_SCH.DEPLOY_PARAM_VALUES
+        FROM _SNOW_DB_.SNOW_GIT_INT_SCH.DEPLOY_PARAM_vALUES
         WHERE PARAMETER_NAME IS NOT NULL
           AND PARAMETER_VALUE IS NOT NULL;
 
@@ -42,9 +46,9 @@ BEGIN
     -- STEP 1: Read raw script from Git stage
     ------------------------------------------------------------
     BEGIN
-        v_read_sql := ''SELECT LISTAGG($1, '''' '''') AS FILE_CONTENT FROM @_SNOW_DB_.SNOW_GIT_INT_SCH.SNOW_GIT_INT_REPO/branches/main/''
+        v_read_sql := 'SELECT LISTAGG($1, '' '') AS FILE_CONTENT FROM @_SNOW_DB_.SNOW_GIT_INT_SCH.SNOW_GIT_INT_REPO/branches/main/'
                       || SCRIPT_NAME
-                      || '' (FILE_FORMAT => ''''_SNOW_DB_.SNOW_GIT_INT_SCH.REPO_STG_SCRIPTS_FF'''')'';
+                      || ' (FILE_FORMAT => ''_SNOW_DB_.SNOW_GIT_INT_SCH.REPO_STG_SCRIPTS_FF'')';
 
         LET res RESULTSET := (EXECUTE IMMEDIATE :v_read_sql);
         LET cur CURSOR FOR res;
@@ -58,29 +62,61 @@ BEGIN
             ) VALUES (
                 :REQUEST_ID,
                 :SCRIPT_NAME,
-                ''FAILED'',
-                ''Could not read script from stage. Check path and stage access. Error: '' || :sqlerrm
+                'FAILED',
+                'Could not read script from stage. Check path and stage access. Error: ' || :sqlerrm
             );
-            RETURN ''FAILED: Could not read script — '' || :sqlerrm;
+            RETURN 'FAILED: Could not read script — ' || :sqlerrm;
     END;
 
-    -- NULL guard
-    IF (v_raw_script IS NULL OR LENGTH(TRIM(v_raw_script)) = 0) THEN
+    ------------------------------------------------------------
+    -- STEP 1A: File existence check
+    ------------------------------------------------------------
+    IF (v_raw_script = '') THEN
+    
         INSERT INTO _SNOW_DB_.SNOW_GIT_INT_SCH.DEPLOYMENT_LOG (
-            REQUEST_ID, SCRIPT_NAME, STATUS, ERROR_MESSAGE
-        ) VALUES (
-            :REQUEST_ID, :SCRIPT_NAME,
-            ''FAILED'',
-            ''Script was read but returned NULL or empty. Check file format and stage path.''
+            REQUEST_ID,
+            SCRIPT_NAME,
+            STATUS,
+            ERROR_MESSAGE
+        )
+        VALUES (
+            :REQUEST_ID,
+            :SCRIPT_NAME,
+            'FAILED',
+            'File not found in Git repository: ' || :SCRIPT_NAME
         );
-        RETURN ''FAILED: Script content is NULL or empty'';
+    
+        RETURN 'FAILED: File not found in Git repository.';
+    
+    END IF;
+    
+    ------------------------------------------------------------
+    -- STEP 1B: Empty file check
+    ------------------------------------------------------------
+    IF (LENGTH(TRIM(v_raw_script)) = 0) THEN
+    
+        INSERT INTO _SNOW_DB_.SNOW_GIT_INT_SCH.DEPLOYMENT_LOG (
+            REQUEST_ID,
+            SCRIPT_NAME,
+            STATUS,
+            ERROR_MESSAGE
+        )
+        VALUES (
+            :REQUEST_ID,
+            :SCRIPT_NAME,
+            'FAILED',
+            'File exists but contains no executable content'
+        );
+    
+        RETURN 'FAILED: File exists but contains no executable content';
+    
     END IF;
 
     -- Carry raw script forward for logging
     v_resolved_script := v_raw_script;
 
     -- TEMPORARY DEBUG — remove once confirmed working
-    --RETURN ''DEBUG: '' || v_resolved_script;
+    --RETURN 'DEBUG: ' || v_resolved_script;
 
     ------------------------------------------------------------
     -- STEP 2: Dynamically substitute all tokens from parameter table
@@ -94,12 +130,12 @@ BEGIN
     ------------------------------------------------------------
     v_unresolved := NULL;
 
-    SELECT LISTAGG(DISTINCT matched_token, '', '')
+    SELECT LISTAGG(DISTINCT matched_token, ', ')
     INTO   :v_unresolved
     FROM (
         SELECT REGEXP_SUBSTR(
                     :v_resolved_script,
-                    ''__[A-Z0-9_]+__'',
+                    '__[A-Z0-9_]+__',
                     1,
                     seq4() + 1
                ) AS matched_token
@@ -113,18 +149,18 @@ BEGIN
             STATUS, ERROR_MESSAGE, UNRESOLVED_TOKENS
         ) VALUES (
             :REQUEST_ID, :SCRIPT_NAME, :v_raw_script, :v_resolved_script,
-            ''FAILED'',
-            ''Deployment aborted. Unresolved tokens found. Add them to DEPLOY_PARAM_VALUES.'',
+            'FAILED',
+            'Deployment aborted. Unresolved tokens found. Add them to DEPLOY_PARAM_vALUES.',
             :v_unresolved
         );
-        RETURN ''FAILED: Unresolved tokens — '' || v_unresolved;
+        RETURN 'FAILED: Unresolved tokens — ' || v_unresolved;
     END IF;
 
     ------------------------------------------------------------
     -- STEP 4: Split on semicolon and execute each statement
     ------------------------------------------------------------
     v_start      := CURRENT_TIMESTAMP();
-    v_statements := SPLIT(v_resolved_script, '';'');
+    v_statements := SPLIT(v_resolved_script, ';');
     v_stmt_count := ARRAY_SIZE(v_statements);
     v_index      := 0;
 
@@ -139,7 +175,7 @@ BEGIN
     END WHILE;
 
     v_end     := CURRENT_TIMESTAMP();
-    v_exec_ms := DATEDIFF(''millisecond'', v_start, v_end);
+    v_exec_ms := DATEDIFF('millisecond', v_start, v_end);
 
     ------------------------------------------------------------
     -- STEP 5: Log success
@@ -149,24 +185,24 @@ BEGIN
         STATUS, EXECUTION_MS
     ) VALUES (
         :REQUEST_ID, :SCRIPT_NAME, :v_raw_script, :v_resolved_script,
-        ''SUCCESS'', :v_exec_ms
+        'SUCCESS', :v_exec_ms
     );
 
-    RETURN ''SUCCESS: '' || SCRIPT_NAME || '' deployed in '' || v_exec_ms || ''ms'';
+    RETURN 'SUCCESS: ' || SCRIPT_NAME || ' deployed in ' || v_exec_ms || 'ms';
 
 EXCEPTION
     WHEN OTHER THEN
         v_end     := CURRENT_TIMESTAMP();
-        v_exec_ms := DATEDIFF(''millisecond'', v_start, v_end);
+        v_exec_ms := DATEDIFF('millisecond', v_start, v_end);
 
         INSERT INTO _SNOW_DB_.SNOW_GIT_INT_SCH.DEPLOYMENT_LOG (
             REQUEST_ID, SCRIPT_NAME, RAW_SCRIPT, RESOLVED_SCRIPT,
             STATUS, ERROR_MESSAGE, EXECUTION_MS
         ) VALUES (
             :REQUEST_ID, :SCRIPT_NAME, :v_raw_script, :v_resolved_script,
-            ''FAILED'', :sqlerrm, :v_exec_ms
+            'FAILED', :sqlerrm, :v_exec_ms
         );
 
-        RETURN ''FAILED: '' || :sqlerrm;
+        RETURN 'FAILED: ' || :sqlerrm;
 END;
-';
+$$;
