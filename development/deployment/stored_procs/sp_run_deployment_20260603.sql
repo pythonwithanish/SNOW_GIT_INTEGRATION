@@ -32,7 +32,7 @@ DECLARE
     v_stmt_count        NUMBER;
     v_index             NUMBER;
 
-    -- Cursor over token registry
+    -- Cursor over tokenS
     c_tokens CURSOR FOR
         SELECT 
             TRIM(PARAMETER_NAME)  AS TOKEN,
